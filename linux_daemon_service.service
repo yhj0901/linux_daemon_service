@@ -1,0 +1,16 @@
+[Unit]
+Description=Linux Daemon Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/tmp/hj
+ExecStart=/tmp/hj/linux_daemon_service
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/linux_daemon_service.log
+StandardError=append:/var/log/linux_daemon_service.error.log
+
+[Install]
+WantedBy=multi-user.target 

@@ -1,0 +1,25 @@
+# Backend 설정
+backend:
+  url: "http://localhost:8080/api"  # Backend 서버 URL
+  timeout: 30                       # API 요청 타임아웃 (초)
+  retryCnt: 3                       # API 요청 재시도 횟수
+
+# 로깅 설정
+logging:
+  level: "info"
+  file: "/var/log/linux_daemon_service.log"
+  maxSize: 100    # MB
+  maxBackups: 3
+  maxAge: 7       # 일
+
+# 모니터링 설정
+monitoring:
+  enabled: true
+  metricsPort: 9090
+  endpoint: "/metrics"
+  process:
+    name: "trivy"                   # 모니터링할 프로세스 이름
+    cpuLimit: 80.0                  # CPU 사용량 제한 (%)
+    memoryLimit: 1024              # 메모리 사용량 제한 (MB)
+    timeout: 300                   # 프로세스 실행 타임아웃 (초)
+    checkInterval: 5               # 모니터링 체크 간격 (초) 
