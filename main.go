@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/yhj0901/rabbitmq-bridge/go-client/pkg/rabbitmq"
 )
 
 var (
@@ -101,6 +104,74 @@ func (pm *ProcessManager) RemovePID() error {
 	return os.Remove(pm.pidFile)
 }
 
+func sendMessageToRabbitMQ() {
+	config := rabbitmq.Config{
+		Host:     "10.0.2.194",
+		Port:     5672,
+		Username: "guest",
+		Password: "guest",
+		VHost:    "/",
+	}
+
+	rabbitmqClient, err := rabbitmq.NewClient(config)
+	if err != nil {
+		log.Fatalf("RabbitMQ 클라이언트 생성 실패: %v", err)
+	}
+
+	// Exchange 선언
+	if err := rabbitmqClient.DeclareExchange("test", "direct"); err != nil {
+		log.Fatalf("Exchange 선언 실패: %v", err)
+	}
+
+	// Queue 선언
+	if err := rabbitmqClient.DeclareQueue("request_queue"); err != nil {
+		log.Fatalf("Queue 선언 실패: %v", err)
+	}
+
+	// Queue와 Exchange 바인딩
+	if err := rabbitmqClient.BindQueue("request_queue", "test", "request_key"); err != nil {
+		log.Fatalf("Queue와 Exchange 바인딩 실패: %v", err)
+	}
+
+	// 응답 큐 선언
+	replyQueue, err := rabbitmqClient.DeclareReplyQueue()
+	if err != nil {
+		log.Fatalf("응답 큐 선언 실패: %v", err)
+	}
+
+	log.Printf("응답 큐 생성됨: %s", replyQueue)
+
+	// 요청 메시지
+	message := []byte("한번 요청해보자!!!")
+	log.Printf("요청 메시지: %s", message)
+
+	// 상관 ID 생성
+	correlationID := fmt.Sprintf("go-Daemon-Service-%d", time.Now().UnixNano())
+
+	// 컨텍스트 생성
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 요청 전송
+	err = rabbitmqClient.PublishWithOptions(ctx, "test", "request_key", message, rabbitmq.PublishOptions{
+		ReplyTo:       replyQueue,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		log.Fatalf("메시지 전송 실패: %v", err)
+	}
+	log.Printf("메시지 전송 성공: %s", correlationID)
+
+	// 응답 수신
+	response, err := rabbitmqClient.WaitForResponse(ctx, replyQueue, correlationID)
+	if err != nil {
+		log.Fatalf("응답 수신 실패: %v", err)
+	}
+
+	log.Printf("응답 수신 성공: %s", response)
+
+}
+
 func main() {
 	flag.Parse()
 
@@ -151,6 +222,8 @@ func main() {
 			case <-done:
 				return
 			default:
+				// rabbitmq sender 실행 10초에 한번씩 메시지 전송
+				go sendMessageToRabbitMQ()
 				log.Println("데몬 서비스가 실행 중입니다...")
 				time.Sleep(10 * time.Second)
 			}

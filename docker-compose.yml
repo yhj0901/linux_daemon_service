@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  daemon-service:
+    build: .
+    container_name: linux_daemon_service
+    restart: always
+    volumes:
+      # 로그 파일 볼륨 마운트
+      - daemon-logs:/var/log/linux_daemon_service
+      # 설정 파일 마운트 (로컬 설정 파일 사용 시)
+      - ./config/config.yaml:/etc/linux_daemon_service/config.yaml
+    environment:
+      - TZ=Asia/Seoul
+
+volumes:
+  daemon-logs: 
