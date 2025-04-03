@@ -4,6 +4,13 @@ backend:
   timeout: 30                       # API 요청 타임아웃 (초)
   retryCnt: 3                       # API 요청 재시도 횟수
 
+# RabbitMQ 설정
+rabbitmq:
+  url: "amqp://guest:guest@10.0.2.194:5672/"  # RabbitMQ 서버 URL
+  exchange: "my_exchange"                    # 교환기 이름
+  queue: "my_queue"                          # 큐 이름
+  routingKey: "my_key"                       # 라우팅 키
+
 # 로깅 설정
 logging:
   level: "info"

@@ -15,6 +15,14 @@ type Config struct {
 		RetryCnt int    `yaml:"retryCnt"` // API 요청 재시도 횟수
 	} `yaml:"backend"`
 
+	// RabbitMQ 설정
+	RabbitMQ struct {
+		URL        string `yaml:"url"`        // RabbitMQ 서버 URL
+		Exchange   string `yaml:"exchange"`   // 교환기 이름
+		Queue      string `yaml:"queue"`      // 큐 이름
+		RoutingKey string `yaml:"routingKey"` // 라우팅 키
+	} `yaml:"rabbitmq"`
+
 	// 로깅 설정
 	Logging struct {
 		Level      string `yaml:"level"`      // 로그 레벨 (debug, info, warn, error)

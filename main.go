@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -12,13 +13,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yhj0901/rabbitmq-bridge/go-client/pkg/rabbitmq"
+	"linux_daemon_service/config"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 var (
-	configPath = flag.String("config", "", "설정 파일 경로")
+	configPath = flag.String("config", "config/config.yaml", "설정 파일 경로")
 	pidFile    = flag.String("pid", "/var/run/linux_daemon_service.pid", "PID 파일 경로")
 )
+
+// 메시지 구조체
+type AnalysisMessage struct {
+	JobID  string `json:"job_id"`
+	Status string `json:"status"`
+}
 
 // ProcessManager는 프로세스 관리를 담당하는 구조체입니다.
 type ProcessManager struct {
@@ -36,12 +45,12 @@ func NewProcessManager(pidFile string) *ProcessManager {
 func (pm *ProcessManager) GetPID() (int, error) {
 	pidBytes, err := os.ReadFile(pm.pidFile)
 	if err != nil {
-		return 0, fmt.Errorf("PID 파일을 읽을 수 없습니다: %v", err)
+		return 0, fmt.Errorf("pid 파일을 읽을 수 없습니다: %v", err)
 	}
 
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
 	if err != nil {
-		return 0, fmt.Errorf("PID 파일의 내용이 올바르지 않습니다: %v", err)
+		return 0, fmt.Errorf("pid 파일의 내용이 올바르지 않습니다: %v", err)
 	}
 
 	return pid, nil
@@ -104,72 +113,168 @@ func (pm *ProcessManager) RemovePID() error {
 	return os.Remove(pm.pidFile)
 }
 
-func sendMessageToRabbitMQ() {
-	config := rabbitmq.Config{
-		Host:     "10.0.2.194",
-		Port:     5672,
-		Username: "guest",
-		Password: "guest",
-		VHost:    "/",
+// RabbitMQ 관련 구조체와 함수
+type RabbitMQ struct {
+	conn       *amqp.Connection
+	channel    *amqp.Channel
+	config     config.Config
+	exchange   string
+	routingKey string
+}
+
+// NewRabbitMQ는 RabbitMQ 클라이언트를 생성합니다.
+func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
+	// 환경 변수에서 Exchange와 Routing Key를 가져오거나 기본값 사용
+	exchange := os.Getenv("RABBITMQ_EXCHANGE")
+	if exchange == "" {
+		exchange = "image_analysis" // 파이썬 코드와 동일한 기본값
 	}
 
-	rabbitmqClient, err := rabbitmq.NewClient(config)
+	routingKey := os.Getenv("RABBITMQ_ROUTING_KEY")
+	if routingKey == "" {
+		routingKey = "analysis.results" // 파이썬 코드와 동일한 기본값
+	}
+
+	// RabbitMQ 연결 생성
+	conn, err := amqp.Dial(cfg.RabbitMQ.URL)
 	if err != nil {
-		log.Fatalf("RabbitMQ 클라이언트 생성 실패: %v", err)
+		return nil, fmt.Errorf("rabbitmq 연결 실패: %v", err)
+	}
+
+	// 채널 생성
+	ch, err := conn.Channel()
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("rabbitmq 채널 생성 실패: %v", err)
 	}
 
 	// Exchange 선언
-	if err := rabbitmqClient.DeclareExchange("test", "direct"); err != nil {
-		log.Fatalf("Exchange 선언 실패: %v", err)
+	err = ch.ExchangeDeclare(
+		exchange, // 이름
+		"topic",  // 타입 (topic으로 변경하여 라우팅 키 패턴 지원)
+		true,     // durable
+		false,    // auto-deleted
+		false,    // internal
+		false,    // no-wait
+		nil,      // arguments
+	)
+	if err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("exchange 선언 실패: %v", err)
 	}
 
 	// Queue 선언
-	if err := rabbitmqClient.DeclareQueue("request_queue"); err != nil {
-		log.Fatalf("Queue 선언 실패: %v", err)
+	queueName := "go_analysis_queue"
+	_, err = ch.QueueDeclare(
+		queueName, // 이름
+		true,      // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		nil,       // arguments
+	)
+	if err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("queue 선언 실패: %v", err)
 	}
 
 	// Queue와 Exchange 바인딩
-	if err := rabbitmqClient.BindQueue("request_queue", "test", "request_key"); err != nil {
-		log.Fatalf("Queue와 Exchange 바인딩 실패: %v", err)
-	}
-
-	// 응답 큐 선언
-	replyQueue, err := rabbitmqClient.DeclareReplyQueue()
+	err = ch.QueueBind(
+		queueName,  // queue name
+		routingKey, // routing key
+		exchange,   // exchange
+		false,
+		nil,
+	)
 	if err != nil {
-		log.Fatalf("응답 큐 선언 실패: %v", err)
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("queue 바인딩 실패: %v", err)
 	}
 
-	log.Printf("응답 큐 생성됨: %s", replyQueue)
+	return &RabbitMQ{
+		conn:       conn,
+		channel:    ch,
+		config:     cfg,
+		exchange:   exchange,
+		routingKey: routingKey,
+	}, nil
+}
 
-	// 요청 메시지
-	message := []byte("한번 요청해보자!!!")
-	log.Printf("요청 메시지: %s", message)
-
-	// 상관 ID 생성
-	correlationID := fmt.Sprintf("go-Daemon-Service-%d", time.Now().UnixNano())
-
-	// 컨텍스트 생성
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// 요청 전송
-	err = rabbitmqClient.PublishWithOptions(ctx, "test", "request_key", message, rabbitmq.PublishOptions{
-		ReplyTo:       replyQueue,
-		CorrelationID: correlationID,
-	})
+// PublishJSONMessage는 JSON 메시지를 발행합니다.
+func (r *RabbitMQ) PublishJSONMessage(ctx context.Context, message interface{}) error {
+	// 메시지를 JSON으로 인코딩
+	jsonData, err := json.Marshal(message)
 	if err != nil {
-		log.Fatalf("메시지 전송 실패: %v", err)
+		return fmt.Errorf("json 인코딩 실패: %v", err)
 	}
-	log.Printf("메시지 전송 성공: %s", correlationID)
 
-	// 응답 수신
-	response, err := rabbitmqClient.WaitForResponse(ctx, replyQueue, correlationID)
+	return r.channel.PublishWithContext(
+		ctx,
+		r.exchange,   // exchange
+		r.routingKey, // routing key
+		false,        // mandatory
+		false,        // immediate
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        jsonData,
+		},
+	)
+}
+
+// Consume은 메시지를 소비하고 JSON으로 파싱합니다.
+func (r *RabbitMQ) Consume(ctx context.Context, handler func(msg *AnalysisMessage)) error {
+	msgs, err := r.channel.Consume(
+		"go_analysis_queue", // queue
+		"",                  // consumer
+		true,                // auto-ack
+		false,               // exclusive
+		false,               // no-local
+		false,               // no-wait
+		nil,                 // args
+	)
 	if err != nil {
-		log.Fatalf("응답 수신 실패: %v", err)
+		return fmt.Errorf("메시지 소비 실패: %v", err)
 	}
 
-	log.Printf("응답 수신 성공: %s", response)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-msgs:
+				if !ok {
+					log.Println("메시지 채널이 닫혔습니다")
+					return
+				}
 
+				// JSON 메시지 파싱
+				var analysisMsg AnalysisMessage
+				if err := json.Unmarshal(msg.Body, &analysisMsg); err != nil {
+					log.Printf("json 파싱 실패: %v, 원본 메시지: %s", err, msg.Body)
+					continue
+				}
+
+				// 파싱된 메시지 처리
+				handler(&analysisMsg)
+			}
+		}
+	}()
+
+	return nil
+}
+
+// Close는 RabbitMQ 연결을 닫습니다.
+func (r *RabbitMQ) Close() error {
+	if r.channel != nil {
+		r.channel.Close()
+	}
+	if r.conn != nil {
+		return r.conn.Close()
+	}
+	return nil
 }
 
 func main() {
@@ -189,13 +294,26 @@ func main() {
 
 	// PID 파일 생성 - systemd가 프로세스를 식별하고 관리하기 위해 사용
 	if err := pm.WritePID(); err != nil {
-		log.Fatalf("PID 파일을 생성할 수 없습니다: %v", err)
+		log.Fatalf("pid 파일을 생성할 수 없습니다: %v", err)
 	}
 	defer pm.RemovePID()
 
 	// 로그 설정 - 표준 출력으로 변경
 	log.SetOutput(os.Stdout)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	// 설정 파일 로드
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("설정 파일 로드 실패: %v", err)
+	}
+
+	// RabbitMQ 클라이언트 생성
+	rabbitmq, err := NewRabbitMQ(*cfg)
+	if err != nil {
+		log.Fatalf("rabbitmq 클라이언트 생성 실패: %v", err)
+	}
+	defer rabbitmq.Close()
 
 	// 시그널 채널 생성
 	sigChan := make(chan os.Signal, 1)
@@ -206,25 +324,40 @@ func main() {
 
 	// 데몬 프로세스 시작 로그
 	log.Println("데몬 서비스가 시작되었습니다.")
+	log.Printf("설정 정보: RabbitMQ URL=%s, Exchange=%s, RoutingKey=%s",
+		cfg.RabbitMQ.URL, rabbitmq.exchange, rabbitmq.routingKey)
 
-	// 설정 파일 로드 (필요한 경우)
-	if *configPath != "" {
-		log.Printf("설정 파일 로드 중: %s", *configPath)
-		// TODO: 설정 파일 로드 로직 구현
+	// 메인 컨텍스트
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 메시지 소비 시작 - JSON 메시지 처리
+	err = rabbitmq.Consume(ctx, func(msg *AnalysisMessage) {
+		log.Printf("분석 메시지 수신: JobID=%s, Status=%s", msg.JobID, msg.Status)
+	})
+	if err != nil {
+		log.Fatalf("메시지 소비 시작 실패: %v", err)
 	}
 
-	// 메인 작업 고루틴
-	done := make(chan struct{})
+	// 메시지 발행 테스트 - 파이썬과 동일한 형식으로 전송
 	go func() {
-		defer close(done)
 		for {
 			select {
-			case <-done:
+			case <-ctx.Done():
 				return
 			default:
-				// rabbitmq sender 실행 10초에 한번씩 메시지 전송
-				go sendMessageToRabbitMQ()
-				log.Println("데몬 서비스가 실행 중입니다...")
+				// 파이썬과 같은 형식의 메시지 생성
+				message := AnalysisMessage{
+					JobID:  fmt.Sprintf("job-%d hjyang", time.Now().Unix()),
+					Status: "processing",
+				}
+
+				err := rabbitmq.PublishJSONMessage(ctx, message)
+				if err != nil {
+					log.Printf("메시지 발행 실패: %v", err)
+				} else {
+					log.Printf("메시지 발행 성공: %+v", message)
+				}
 				time.Sleep(10 * time.Second)
 			}
 		}
@@ -235,11 +368,23 @@ func main() {
 		switch sig {
 		case syscall.SIGTERM:
 			log.Printf("종료 시그널 수신: %v", sig)
-			close(done)
+			cancel()
 			return
 		case syscall.SIGHUP:
 			log.Println("설정 리로드 시그널 수신")
-			// TODO: 설정 리로드 로직 구현
+			// 설정 파일 다시 로드
+			newCfg, err := config.LoadConfig(*configPath)
+			if err != nil {
+				log.Printf("설정 파일 리로드 실패: %v", err)
+				continue
+			}
+
+			// 여기에 설정 업데이트 로직 구현
+			log.Printf("설정 파일이 리로드되었습니다: %s", *configPath)
+
+			// 예시로 RabbitMQ 설정 출력
+			log.Printf("업데이트된 RabbitMQ 설정: URL=%s, Exchange=%s",
+				newCfg.RabbitMQ.URL, rabbitmq.exchange)
 		}
 	}
 }
