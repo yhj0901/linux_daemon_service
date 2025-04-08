@@ -120,25 +120,54 @@ type RabbitMQ struct {
 	config     config.Config
 	exchange   string
 	routingKey string
+	queueName  string
+}
+
+// 환경 변수 처리 함수 - 환경 변수가 있으면 사용, 없으면 config 값 사용
+func getEnvOrConfig(envKey, configValue string) string {
+	if value := os.Getenv(envKey); value != "" {
+		return value
+	}
+	return configValue
+}
+
+// ConnectWithRetry RabbitMQ에 최대 시도 횟수만큼 재시도합니다
+func ConnectWithRetry(url string, maxRetries int, retryInterval time.Duration) (*amqp.Connection, error) {
+	var conn *amqp.Connection
+	var err error
+
+	log.Printf("RabbitMQ 연결 시도 중: %s", url)
+
+	for i := 0; i < maxRetries; i++ {
+		conn, err = amqp.Dial(url)
+		if err == nil {
+			log.Printf("RabbitMQ에 연결되었습니다 (시도 %d/%d)", i+1, maxRetries)
+			return conn, nil
+		}
+
+		log.Printf("RabbitMQ 연결 실패 (시도 %d/%d): %v", i+1, maxRetries, err)
+
+		if i < maxRetries-1 {
+			log.Printf("%s 후 재시도합니다...", retryInterval)
+			time.Sleep(retryInterval)
+		}
+	}
+
+	return nil, fmt.Errorf("rabbitmq에 연결할 수 없습니다 (최대 시도 횟수 초과): %v", err)
 }
 
 // NewRabbitMQ는 RabbitMQ 클라이언트를 생성합니다.
 func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
-	// 환경 변수에서 Exchange와 Routing Key를 가져오거나 기본값 사용
-	exchange := os.Getenv("RABBITMQ_EXCHANGE")
-	if exchange == "" {
-		exchange = "image_analysis" // 파이썬 코드와 동일한 기본값
-	}
+	// 환경 변수 또는 설정 파일에서 RabbitMQ 정보 가져오기
+	url := getEnvOrConfig("RABBITMQ_URL", cfg.RabbitMQ.URL)
+	exchange := getEnvOrConfig("RABBITMQ_EXCHANGE", cfg.RabbitMQ.Exchange)
+	queueName := getEnvOrConfig("RABBITMQ_QUEUE", cfg.RabbitMQ.Queue)
+	routingKey := getEnvOrConfig("RABBITMQ_ROUTING_KEY", cfg.RabbitMQ.RoutingKey)
 
-	routingKey := os.Getenv("RABBITMQ_ROUTING_KEY")
-	if routingKey == "" {
-		routingKey = "analysis.results" // 파이썬 코드와 동일한 기본값
-	}
-
-	// RabbitMQ 연결 생성
-	conn, err := amqp.Dial(cfg.RabbitMQ.URL)
+	// RabbitMQ 연결 (최대 5회 재시도, 5초 간격)
+	conn, err := ConnectWithRetry(url, 5, 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("rabbitmq 연결 실패: %v", err)
+		return nil, err
 	}
 
 	// 채널 생성
@@ -165,7 +194,6 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 	}
 
 	// Queue 선언
-	queueName := "go_analysis_queue"
 	_, err = ch.QueueDeclare(
 		queueName, // 이름
 		true,      // durable
@@ -200,6 +228,7 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 		config:     cfg,
 		exchange:   exchange,
 		routingKey: routingKey,
+		queueName:  queueName,
 	}, nil
 }
 
@@ -227,13 +256,13 @@ func (r *RabbitMQ) PublishJSONMessage(ctx context.Context, message interface{}) 
 // Consume은 메시지를 소비하고 JSON으로 파싱합니다.
 func (r *RabbitMQ) Consume(ctx context.Context, handler func(msg *AnalysisMessage)) error {
 	msgs, err := r.channel.Consume(
-		"go_analysis_queue", // queue
-		"",                  // consumer
-		true,                // auto-ack
-		false,               // exclusive
-		false,               // no-local
-		false,               // no-wait
-		nil,                 // args
+		r.queueName, // queue
+		"",          // consumer
+		true,        // auto-ack
+		false,       // exclusive
+		false,       // no-local
+		false,       // no-wait
+		nil,         // args
 	)
 	if err != nil {
 		return fmt.Errorf("메시지 소비 실패: %v", err)
@@ -324,8 +353,8 @@ func main() {
 
 	// 데몬 프로세스 시작 로그
 	log.Println("데몬 서비스가 시작되었습니다.")
-	log.Printf("설정 정보: RabbitMQ URL=%s, Exchange=%s, RoutingKey=%s",
-		cfg.RabbitMQ.URL, rabbitmq.exchange, rabbitmq.routingKey)
+	log.Printf("설정 정보: RabbitMQ URL=%s, Exchange=%s, RoutingKey=%s, Queue=%s",
+		cfg.RabbitMQ.URL, rabbitmq.exchange, rabbitmq.routingKey, rabbitmq.queueName)
 
 	// 메인 컨텍스트
 	ctx, cancel := context.WithCancel(context.Background())
@@ -348,7 +377,7 @@ func main() {
 			default:
 				// 파이썬과 같은 형식의 메시지 생성
 				message := AnalysisMessage{
-					JobID:  fmt.Sprintf("job-%d hjyang", time.Now().Unix()),
+					JobID:  fmt.Sprintf("job-%d", time.Now().Unix()),
 					Status: "processing",
 				}
 

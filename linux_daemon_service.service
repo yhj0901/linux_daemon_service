@@ -5,12 +5,17 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/tmp/hj
-ExecStart=/tmp/hj/linux_daemon_service
+ExecStart=/usr/local/bin/linux_daemon_service -config /etc/linux_daemon_service/config.yaml
+
+# RabbitMQ 환경 변수
+Environment="RABBITMQ_URL=amqp://guest:guest@10.0.2.194:5672/"
+Environment="RABBITMQ_EXCHANGE=image_analysis"
+Environment="RABBITMQ_QUEUE=go_analysis_queue"
+Environment="RABBITMQ_ROUTING_KEY=analysis.results"
+
+# 재시작 설정
 Restart=always
 RestartSec=5
-StandardOutput=append:/var/log/linux_daemon_service.log
-StandardError=append:/var/log/linux_daemon_service.error.log
 
 [Install]
 WantedBy=multi-user.target 
