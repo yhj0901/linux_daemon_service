@@ -6,10 +6,15 @@ backend:
 
 # RabbitMQ 설정
 rabbitmq:
-  url: "${RABBITMQ_URL:-amqp://guest:guest@10.0.0.46:5672/}"  # 환경 변수 또는 기본값 사용
+  url: "${RABBITMQ_URL:-amqp://guest:guest@localhost:5672/}"  # 환경 변수 또는 기본값 사용
   exchange: "${RABBITMQ_EXCHANGE:-image_analysis}"            # 환경 변수 또는 기본값 사용
-  queue: "${RABBITMQ_QUEUE:-image_analysis_requests}"               # 환경 변수 또는 기본값 사용
-  routingKey: "${RABBITMQ_ROUTING_KEY:-analysis.results}"     # 환경 변수 또는 기본값 사용
+  
+  # 요청/응답 큐 설정
+  requestQueue: "${RABBITMQ_REQUEST_QUEUE:-image_analysis_requests}"     # 도커 이미지 분석 요청을 받는 큐
+  requestRoutingKey: "${RABBITMQ_REQUEST_ROUTING_KEY:-analysis.requests}" # 요청 라우팅 키
+  
+  resultQueue: "${RABBITMQ_RESULT_QUEUE:-image_analysis_results}"         # 분석 결과를 전송할 큐
+  resultRoutingKey: "${RABBITMQ_RESULT_ROUTING_KEY:-analysis.results}"    # 결과 라우팅 키
 
 # 로깅 설정
 logging:

@@ -17,10 +17,16 @@ type Config struct {
 
 	// RabbitMQ 설정
 	RabbitMQ struct {
-		URL        string `yaml:"url"`        // RabbitMQ 서버 URL
-		Exchange   string `yaml:"exchange"`   // 교환기 이름
-		Queue      string `yaml:"queue"`      // 큐 이름
-		RoutingKey string `yaml:"routingKey"` // 라우팅 키
+		URL      string `yaml:"url"`      // RabbitMQ 서버 URL
+		Exchange string `yaml:"exchange"` // 교환기 이름
+
+		// 요청 큐 설정
+		RequestQueue      string `yaml:"requestQueue"`      // 도커 이미지 분석 요청을 받는 큐
+		RequestRoutingKey string `yaml:"requestRoutingKey"` // 요청 라우팅 키
+
+		// 결과 큐 설정
+		ResultQueue      string `yaml:"resultQueue"`      // 분석 결과를 전송할 큐
+		ResultRoutingKey string `yaml:"resultRoutingKey"` // 결과 라우팅 키
 	} `yaml:"rabbitmq"`
 
 	// 로깅 설정
