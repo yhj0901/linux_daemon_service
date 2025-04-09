@@ -50,6 +50,17 @@ type DockerImageResult struct {
 	ErrorMsg        string    `json:"error_msg,omitempty"`
 }
 
+// 백엔드에 전송할 결과 메시지 구조체
+type BackendResponseMessage struct {
+	JobID           string `json:"job_id"`
+	ImageURL        string `json:"image_url"`
+	Status          string `json:"status"`          // success, error
+	Vulnerabilities int    `json:"vulnerabilities"` // 취약점 개수
+	CompletedAt     string `json:"completed_at"`
+	ErrorMsg        string `json:"error_msg,omitempty"`
+	Action          string `json:"action"`
+}
+
 // ProcessManager는 프로세스 관리를 담당하는 구조체입니다.
 type ProcessManager struct {
 	pidFile string
@@ -292,11 +303,24 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 
 // PublishResult는 도커 이미지 분석 결과를 발행합니다.
 func (r *RabbitMQ) PublishResult(ctx context.Context, result *DockerImageResult) error {
+	// 백엔드 응답 메시지로 변환
+	backendResponse := &BackendResponseMessage{
+		JobID:           result.JobID,
+		ImageURL:        fmt.Sprintf("%s:%s", result.ImageName, result.Tag),
+		Status:          result.Status,
+		Vulnerabilities: result.Vulnerabilities,
+		CompletedAt:     result.CompletedAt.Format(time.RFC3339),
+		ErrorMsg:        result.ErrorMsg,
+		Action:          "analyze_docker_image_result",
+	}
+
 	// 메시지를 JSON으로 인코딩
-	jsonData, err := json.Marshal(result)
+	jsonData, err := json.Marshal(backendResponse)
 	if err != nil {
 		return fmt.Errorf("json 인코딩 실패: %v", err)
 	}
+
+	log.Printf("결과 메시지 발행: %s", string(jsonData))
 
 	return r.channel.PublishWithContext(
 		ctx,
