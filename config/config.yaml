@@ -6,9 +6,9 @@ backend:
 
 # RabbitMQ 설정
 rabbitmq:
-  url: "${RABBITMQ_URL:-amqp://guest:guest@localhost:5672/}"  # 환경 변수 또는 기본값 사용
+  url: "${RABBITMQ_URL:-amqp://guest:guest@10.0.0.46:5672/}"  # 환경 변수 또는 기본값 사용
   exchange: "${RABBITMQ_EXCHANGE:-image_analysis}"            # 환경 변수 또는 기본값 사용
-  queue: "${RABBITMQ_QUEUE:-go_analysis_queue}"               # 환경 변수 또는 기본값 사용
+  queue: "${RABBITMQ_QUEUE:-image_analysis_requests}"               # 환경 변수 또는 기본값 사용
   routingKey: "${RABBITMQ_ROUTING_KEY:-analysis.results}"     # 환경 변수 또는 기본값 사용
 
 # 로깅 설정
