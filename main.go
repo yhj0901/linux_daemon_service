@@ -196,11 +196,25 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 	url := getEnvOrConfig("RABBITMQ_URL", cfg.RabbitMQ.URL)
 	exchange := getEnvOrConfig("RABBITMQ_EXCHANGE", cfg.RabbitMQ.Exchange)
 
+	// 요청 큐 설정 (신규 형식)
 	requestQueue := getEnvOrConfig("RABBITMQ_REQUEST_QUEUE", cfg.RabbitMQ.RequestQueue)
 	requestRouting := getEnvOrConfig("RABBITMQ_REQUEST_ROUTING_KEY", cfg.RabbitMQ.RequestRoutingKey)
 
-	resultQueue := getEnvOrConfig("RABBITMQ_RESULT_QUEUE", cfg.RabbitMQ.ResultQueue)
-	resultRouting := getEnvOrConfig("RABBITMQ_RESULT_ROUTING_KEY", cfg.RabbitMQ.ResultRoutingKey)
+	// 결과 큐 설정 (신규 및 기존 형식 모두 지원)
+	// 기존 형식의 환경 변수를 우선 확인하고, 없으면 신규 형식 사용
+	resultQueue := os.Getenv("RABBITMQ_QUEUE")
+	if resultQueue == "" {
+		resultQueue = getEnvOrConfig("RABBITMQ_RESULT_QUEUE", cfg.RabbitMQ.ResultQueue)
+	} else {
+		log.Printf("기존 형식의 환경 변수 RABBITMQ_QUEUE를 사용합니다: %s", resultQueue)
+	}
+
+	resultRouting := os.Getenv("RABBITMQ_ROUTING_KEY")
+	if resultRouting == "" {
+		resultRouting = getEnvOrConfig("RABBITMQ_RESULT_ROUTING_KEY", cfg.RabbitMQ.ResultRoutingKey)
+	} else {
+		log.Printf("기존 형식의 환경 변수 RABBITMQ_ROUTING_KEY를 사용합니다: %s", resultRouting)
+	}
 
 	// RabbitMQ 연결 (최대 5회 재시도, 5초 간격)
 	conn, err := ConnectWithRetry(url, 5, 5*time.Second)
