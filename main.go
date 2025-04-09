@@ -31,6 +31,14 @@ type DockerImageRequest struct {
 	Tag       string `json:"tag"`
 }
 
+// 백엔드에서 보내는 메시지 구조체 추가
+type BackendRequestMessage struct {
+	JobID     string `json:"job_id"`
+	ImageURL  string `json:"image_url"`
+	CreatedAt string `json:"created_at"`
+	Action    string `json:"action"`
+}
+
 // 도커 이미지 분석 결과 메시지 구조체
 type DockerImageResult struct {
 	JobID           string    `json:"job_id"`
@@ -389,21 +397,68 @@ func (r *RabbitMQ) processImageRequest(ctx context.Context, msg amqp.Delivery) {
 		}
 	}()
 
-	// 요청 메시지 파싱
-	var request DockerImageRequest
-	if err := json.Unmarshal(msg.Body, &request); err != nil {
-		log.Printf("요청 파싱 실패: %v, 원본 메시지: %s", err, msg.Body)
+	// 원본 메시지 로깅
+	log.Printf("수신된 메시지: %s", string(msg.Body))
+
+	// 요청 메시지 파싱 시도 - 백엔드 형식
+	var backendRequest BackendRequestMessage
+	if err := json.Unmarshal(msg.Body, &backendRequest); err != nil {
+		log.Printf("백엔드 요청 파싱 실패: %v, 원본 메시지: %s", err, msg.Body)
+
+		// 기존 형식으로 파싱 시도
+		var request DockerImageRequest
+		if err := json.Unmarshal(msg.Body, &request); err != nil {
+			log.Printf("요청 파싱 실패: %v, 원본 메시지: %s", err, msg.Body)
+			return
+		}
+
+		log.Printf("도커 이미지 분석 요청 수신 (기존 형식): JobID=%s, Image=%s:%s",
+			request.JobID, request.ImageName, request.Tag)
+
+		// 이미지 분석 실행
+		processStandardRequest(ctx, r, &request)
 		return
 	}
 
-	log.Printf("도커 이미지 분석 요청 수신: JobID=%s, Image=%s:%s",
-		request.JobID, request.ImageName, request.Tag)
+	// 백엔드 형식에서 이미지 이름과 태그 추출
+	log.Printf("도커 이미지 분석 요청 수신 (백엔드 형식): JobID=%s, ImageURL=%s, Action=%s",
+		backendRequest.JobID, backendRequest.ImageURL, backendRequest.Action)
 
+	// 작업 타입 확인
+	if backendRequest.Action != "analyze_docker_image" {
+		log.Printf("지원하지 않는 작업 타입: %s", backendRequest.Action)
+		return
+	}
+
+	// 이미지 URL 파싱 (format: registry/image:tag)
+	imageAndTag := strings.Split(backendRequest.ImageURL, ":")
+	imageName := imageAndTag[0]
+	tag := "latest" // 기본값
+
+	if len(imageAndTag) > 1 {
+		tag = imageAndTag[1]
+	}
+
+	// 내부 요청 객체 생성
+	request := &DockerImageRequest{
+		JobID:     backendRequest.JobID,
+		ImageName: imageName,
+		Tag:       tag,
+	}
+
+	log.Printf("파싱된 이미지 정보: %s:%s", request.ImageName, request.Tag)
+
+	// 이미지 분석 실행
+	processStandardRequest(ctx, r, request)
+}
+
+// processStandardRequest는 표준 요청 형식에 대한 이미지 분석을 처리합니다.
+func processStandardRequest(ctx context.Context, r *RabbitMQ, request *DockerImageRequest) {
 	// 이미지 분석 실행
 	analysisCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	result, err := AnalyzeDockerImage(analysisCtx, &request)
+	result, err := AnalyzeDockerImage(analysisCtx, request)
 	if err != nil {
 		log.Printf("이미지 분석 실패: %v", err)
 
