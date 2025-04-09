@@ -19,16 +19,10 @@ fi
 # 테스트할 도커 이미지
 TEST_IMAGE="ubuntu:latest"
 
-# 현재 시간을 ISO 형식으로 (2023-04-09T06:50:32+00:00)
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.%3N+00:00")
-JOB_ID=$(cat /proc/sys/kernel/random/uuid)
-
-# 백엔드 형식의 JSON 메시지 생성 
+# JSON 메시지 생성
 MESSAGE=$(jq -n \
-    --arg job_id "$JOB_ID" \
     --arg image "$TEST_IMAGE" \
-    --arg created_at "$TIMESTAMP" \
-    '{job_id: $job_id, image_url: $image, created_at: $created_at, action: "analyze_docker_image"}')
+    '{image: $image, id: "test-request-001", timestamp: now | tostring}')
 
 echo "다음 메시지를 전송합니다:"
 echo $MESSAGE | jq .
