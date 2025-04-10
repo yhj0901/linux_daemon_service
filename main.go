@@ -467,23 +467,38 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 
 	// Trivy 명령어 실행 준비
 	cmd := exec.CommandContext(ctx, trivyPath, "image", "--format", "json", imageFullName)
+	log.Printf("실행 명령어: %s %s", trivyPath, strings.Join(cmd.Args[1:], " "))
+
 	output, err := cmd.CombinedOutput()
-
-	// 결과 처리
-	result.CompletedAt = time.Now()
-
 	if err != nil {
+		log.Printf("trivy 실행 오류: %v", err)
+		log.Printf("trivy 출력: %s", string(output))
 		result.Status = "error"
 		result.ErrorMsg = fmt.Sprintf("이미지 분석 실패: %v - %s", err, string(output))
 		return result, nil
 	}
 
-	// trivy 출력 로깅
-	// log.Printf("trivy 출력 결과: %s", string(output))
+	// 결과 처리
+	result.CompletedAt = time.Now()
+
+	// trivy 출력에서 JSON 부분만 추출
+	outputStr := string(output)
+	jsonStart := strings.Index(outputStr, "{")
+	if jsonStart == -1 {
+		log.Printf("JSON 시작 부분을 찾을 수 없습니다")
+		result.Status = "error"
+		result.ErrorMsg = "JSON 출력을 찾을 수 없습니다"
+		return result, nil
+	}
+
+	jsonOutput := outputStr[jsonStart:]
+	log.Printf("추출된 JSON 출력: %s", jsonOutput)
 
 	// Trivy 출력 결과 파싱
 	var trivyResult struct {
-		Results []struct {
+		SchemaVersion int    `json:"SchemaVersion"`
+		CreatedAt     string `json:"CreatedAt"`
+		Results       []struct {
 			Target          string `json:"Target"`
 			Vulnerabilities []struct {
 				VulnerabilityID  string   `json:"VulnerabilityID"`
@@ -504,26 +519,16 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 	}
 
 	// JSON 파싱 시도
-	if err := json.Unmarshal(output, &trivyResult); err != nil {
+	if err := json.Unmarshal([]byte(jsonOutput), &trivyResult); err != nil {
 		log.Printf("trivy 출력 파싱 실패: %v", err)
-		log.Printf("원본 출력: %s", string(output))
-
-		// JSON 형식이 아닌 경우를 대비한 추가 처리
-		if strings.Contains(string(output), "Vulnerabilities") {
-			log.Printf("출력에 Vulnerabilities 키워드가 포함되어 있습니다")
-			// 기본 취약점 개수로 처리
-			vulnerabilityCount := 1
-			result.Status = "success"
-			result.Vulnerabilities = vulnerabilityCount
-			return result, nil
-		}
+		log.Printf("원본 출력: %s", jsonOutput)
 
 		result.Status = "error"
 		result.ErrorMsg = fmt.Sprintf("결과 파싱 실패: %v", err)
 		return result, nil
 	}
 
-	fmt.Println("trivyResult: ", trivyResult)
+	log.Printf("파싱된 trivyResult 구조체: %+v", trivyResult)
 
 	// 취약점 개수 계산
 	vulnerabilityCount := 0
