@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -400,29 +401,32 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 		Status:    "processing",
 	}
 
+	// 사용자 홈 디렉토리 가져오기
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		result.Status = "error"
+		result.ErrorMsg = fmt.Sprintf("사용자 홈 디렉토리를 찾을 수 없습니다: %v", err)
+		return result, nil
+	}
+
 	// trivy 경로 설정
-	trivyPath := "/usr/local/bin/trivy"
+	binDir := filepath.Join(homeDir, "bin")
+	trivyPath := filepath.Join(binDir, "trivy")
+
+	// bin 디렉토리 생성
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		result.Status = "error"
+		result.ErrorMsg = fmt.Sprintf("bin 디렉토리 생성 실패: %v", err)
+		return result, nil
+	}
 
 	// trivy 존재 여부 확인
 	if _, err := os.Stat(trivyPath); os.IsNotExist(err) {
 		log.Printf("trivy가 설치되어 있지 않습니다. S3에서 다운로드 시작...")
 
-		// AWS SDK를 사용하여 S3에서 trivy 다운로드
-		// TODO: AWS SDK 설정 및 S3 버킷 정보 설정 필요
-		s3Bucket := os.Getenv("S3_BUCKET")
-		s3Key := "trivy"
-
-		if s3Bucket == "" {
-			result.Status = "error"
-			result.ErrorMsg = "S3_BUCKET 환경 변수가 설정되지 않았습니다."
-			return result, nil
-		}
-
 		// S3에서 파일 다운로드
-		// TODO: AWS SDK를 사용한 다운로드 로직 구현
-		// 예시: aws s3 cp s3://${s3Bucket}/${s3Key} ${trivyPath}
 		cmd := exec.Command("aws", "s3", "cp",
-			fmt.Sprintf("s3://docker-analysis-api-dev-binaries-92a1fdfdba50a7e6/%s", s3Key),
+			"s3://docker-analysis-api-dev-binaries-92a1fdfdba50a7e6/trivy",
 			trivyPath)
 
 		if output, err := cmd.CombinedOutput(); err != nil {
@@ -438,7 +442,7 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 			return result, nil
 		}
 
-		log.Printf("trivy 다운로드 및 권한 설정 완료")
+		log.Printf("trivy 다운로드 및 권한 설정 완료: %s", trivyPath)
 	}
 
 	// Trivy 명령어 실행 준비
