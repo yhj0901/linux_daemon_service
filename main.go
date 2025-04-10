@@ -431,6 +431,7 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 	// trivy 경로 설정
 	binDir := filepath.Join(homeDir, "bin")
 	trivyPath := filepath.Join(binDir, trivyFileName)
+	fmt.Println("trivyPath: ", trivyPath)
 
 	// bin 디렉토리 생성
 	if err := os.MkdirAll(binDir, 0755); err != nil {
