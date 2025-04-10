@@ -196,25 +196,48 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 	url := getEnvOrConfig("RABBITMQ_URL", cfg.RabbitMQ.URL)
 	exchange := getEnvOrConfig("RABBITMQ_EXCHANGE", cfg.RabbitMQ.Exchange)
 
-	// 요청 큐 설정 (신규 형식)
+	// 요청 큐 설정
 	requestQueue := getEnvOrConfig("RABBITMQ_REQUEST_QUEUE", cfg.RabbitMQ.RequestQueue)
 	requestRouting := getEnvOrConfig("RABBITMQ_REQUEST_ROUTING_KEY", cfg.RabbitMQ.RequestRoutingKey)
 
-	// 결과 큐 설정 (신규 및 기존 형식 모두 지원)
-	// 기존 형식의 환경 변수를 우선 확인하고, 없으면 신규 형식 사용
-	resultQueue := os.Getenv("RABBITMQ_QUEUE")
-	if resultQueue == "" {
-		resultQueue = getEnvOrConfig("RABBITMQ_RESULT_QUEUE", cfg.RabbitMQ.ResultQueue)
+	// 결과 큐 설정 - 백엔드 호환성 지원
+	// 기존 형식(RABBITMQ_QUEUE)이 있으면 우선 사용, 없으면 신규 형식 사용
+	var resultQueue, resultRouting string
+
+	// 백엔드 호환 방식 (기존 환경 변수)
+	legacyQueue := os.Getenv("RABBITMQ_QUEUE")
+	legacyRouting := os.Getenv("RABBITMQ_ROUTING_KEY")
+
+	// 신규 방식 (확장된 환경 변수)
+	newQueue := os.Getenv("RABBITMQ_RESULT_QUEUE")
+	newRouting := os.Getenv("RABBITMQ_RESULT_ROUTING_KEY")
+
+	// 우선순위: 기존 환경 변수 > 신규 환경 변수 > 설정 파일
+	if legacyQueue != "" {
+		resultQueue = legacyQueue
+		log.Printf("기존 환경 변수를 사용합니다: RABBITMQ_QUEUE=%s", resultQueue)
+	} else if newQueue != "" {
+		resultQueue = newQueue
+		log.Printf("신규 환경 변수를 사용합니다: RABBITMQ_RESULT_QUEUE=%s", resultQueue)
 	} else {
-		log.Printf("기존 형식의 환경 변수 RABBITMQ_QUEUE를 사용합니다: %s", resultQueue)
+		resultQueue = cfg.RabbitMQ.ResultQueue
+		log.Printf("설정 파일의 결과 큐를 사용합니다: %s", resultQueue)
 	}
 
-	resultRouting := os.Getenv("RABBITMQ_ROUTING_KEY")
-	if resultRouting == "" {
-		resultRouting = getEnvOrConfig("RABBITMQ_RESULT_ROUTING_KEY", cfg.RabbitMQ.ResultRoutingKey)
+	if legacyRouting != "" {
+		resultRouting = legacyRouting
+		log.Printf("기존 환경 변수를 사용합니다: RABBITMQ_ROUTING_KEY=%s", resultRouting)
+	} else if newRouting != "" {
+		resultRouting = newRouting
+		log.Printf("신규 환경 변수를 사용합니다: RABBITMQ_RESULT_ROUTING_KEY=%s", resultRouting)
 	} else {
-		log.Printf("기존 형식의 환경 변수 RABBITMQ_ROUTING_KEY를 사용합니다: %s", resultRouting)
+		resultRouting = cfg.RabbitMQ.ResultRoutingKey
+		log.Printf("설정 파일의 결과 라우팅 키를 사용합니다: %s", resultRouting)
 	}
+
+	log.Printf("RabbitMQ 설정: URL=%s, Exchange=%s", url, exchange)
+	log.Printf("요청 큐: %s (라우팅 키: %s)", requestQueue, requestRouting)
+	log.Printf("결과 큐: %s (라우팅 키: %s)", resultQueue, resultRouting)
 
 	// RabbitMQ 연결 (최대 5회 재시도, 5초 간격)
 	conn, err := ConnectWithRetry(url, 5, 5*time.Second)
@@ -334,9 +357,16 @@ func (r *RabbitMQ) PublishResult(ctx context.Context, result *DockerImageResult)
 		return fmt.Errorf("json 인코딩 실패: %v", err)
 	}
 
-	log.Printf("결과 메시지 발행: %s", string(jsonData))
+	log.Printf("결과 메시지 발행 시도: exchange=%s, routing_key=%s", r.exchange, r.resultRouting)
+	log.Printf("결과 메시지 내용: %s", string(jsonData))
 
-	return r.channel.PublishWithContext(
+	// 현재 환경 변수 출력 (디버깅용)
+	log.Printf("환경 변수 확인: RABBITMQ_QUEUE=%s, RABBITMQ_ROUTING_KEY=%s",
+		os.Getenv("RABBITMQ_QUEUE"), os.Getenv("RABBITMQ_ROUTING_KEY"))
+	log.Printf("환경 변수 확인: RABBITMQ_RESULT_QUEUE=%s, RABBITMQ_RESULT_ROUTING_KEY=%s",
+		os.Getenv("RABBITMQ_RESULT_QUEUE"), os.Getenv("RABBITMQ_RESULT_ROUTING_KEY"))
+
+	err = r.channel.PublishWithContext(
 		ctx,
 		r.exchange,      // exchange
 		r.resultRouting, // routing key
@@ -348,10 +378,19 @@ func (r *RabbitMQ) PublishResult(ctx context.Context, result *DockerImageResult)
 			Body:         jsonData,
 		},
 	)
+
+	if err != nil {
+		log.Printf("결과 메시지 발행 실패: %v", err)
+		return fmt.Errorf("rabbitmq 발행 실패: %v", err)
+	}
+
+	log.Printf("결과 메시지 발행 성공!")
+	return nil
 }
 
 // AnalyzeDockerImage는 Trivy를 사용하여 도커 이미지를 분석합니다.
 func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerImageResult, error) {
+	fmt.Println("AnalyzeDockerImage 실행 :", ctx)
 	imageFullName := fmt.Sprintf("%s:%s", req.ImageName, req.Tag)
 
 	result := &DockerImageResult{
