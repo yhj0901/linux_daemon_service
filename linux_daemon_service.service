@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 User=root
 ExecStart=/usr/local/bin/linux_daemon_service -config /etc/linux_daemon_service/config.yaml
+S3_BUCKET=docker-analysis-api-dev-binaries-92a1fdfdba50a7e6
 
 # RabbitMQ 환경 변수
 Environment="RABBITMQ_URL=amqp://guest:guest@10.0.0.46:5672/"
@@ -14,6 +15,8 @@ Environment="RABBITMQ_REQUEST_QUEUE=image_analysis_requests"
 Environment="RABBITMQ_REQUEST_ROUTING_KEY=analysis.requests"
 Environment="RABBITMQ_RESULT_QUEUE=image_analysis_results"
 Environment="RABBITMQ_RESULT_ROUTING_KEY=analysis.results"
+
+
 
 # 재시작 설정
 Restart=always
