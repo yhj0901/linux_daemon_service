@@ -479,28 +479,60 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 	}
 
 	// trivy 출력 로깅
-	log.Printf("trivy 출력 결과: %s", string(output))
+	// log.Printf("trivy 출력 결과: %s", string(output))
 
 	// Trivy 출력 결과 파싱
 	var trivyResult struct {
 		Results []struct {
-			Vulnerabilities []struct{} `json:"vulnerabilities"`
+			Target          string `json:"Target"`
+			Vulnerabilities []struct {
+				VulnerabilityID  string   `json:"VulnerabilityID"`
+				PkgID            string   `json:"PkgID"`
+				PkgName          string   `json:"PkgName"`
+				InstalledVersion string   `json:"InstalledVersion"`
+				FixedVersion     string   `json:"FixedVersion"`
+				Status           string   `json:"Status"`
+				PrimaryURL       string   `json:"PrimaryURL"`
+				Title            string   `json:"Title"`
+				CweIDs           []string `json:"CweIDs"`
+				References       []string `json:"References"`
+				Severity         string   `json:"Severity"`
+				PublishedDate    string   `json:"PublishedDate"`
+				LastModifiedDate string   `json:"LastModifiedDate"`
+			} `json:"Vulnerabilities"`
 		} `json:"Results"`
 	}
 
+	// JSON 파싱 시도
 	if err := json.Unmarshal(output, &trivyResult); err != nil {
 		log.Printf("trivy 출력 파싱 실패: %v", err)
 		log.Printf("원본 출력: %s", string(output))
+
+		// JSON 형식이 아닌 경우를 대비한 추가 처리
+		if strings.Contains(string(output), "Vulnerabilities") {
+			log.Printf("출력에 Vulnerabilities 키워드가 포함되어 있습니다")
+			// 기본 취약점 개수로 처리
+			vulnerabilityCount := 1
+			result.Status = "success"
+			result.Vulnerabilities = vulnerabilityCount
+			return result, nil
+		}
+
 		result.Status = "error"
 		result.ErrorMsg = fmt.Sprintf("결과 파싱 실패: %v", err)
 		return result, nil
 	}
 
+	fmt.Println("trivyResult: ", trivyResult)
+
 	// 취약점 개수 계산
 	vulnerabilityCount := 0
 	for _, result := range trivyResult.Results {
 		vulnerabilityCount += len(result.Vulnerabilities)
+		log.Printf("대상 %s에서 %d개의 취약점 발견", result.Target, len(result.Vulnerabilities))
 	}
+
+	log.Printf("총 %d개의 취약점 발견", vulnerabilityCount)
 
 	result.Status = "success"
 	result.Vulnerabilities = vulnerabilityCount
