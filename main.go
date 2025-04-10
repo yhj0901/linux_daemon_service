@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -409,6 +410,11 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 		return result, nil
 	}
 
+	// 시스템 아키텍처 확인
+	arch := runtime.GOARCH
+	osType := runtime.GOOS
+	log.Printf("시스템 아키텍처: %s, OS: %s", arch, osType)
+
 	// trivy 경로 설정
 	binDir := filepath.Join(homeDir, "bin")
 	trivyPath := filepath.Join(binDir, "trivy")
@@ -424,9 +430,22 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 	if _, err := os.Stat(trivyPath); os.IsNotExist(err) {
 		log.Printf("trivy가 설치되어 있지 않습니다. S3에서 다운로드 시작...")
 
+		// 아키텍처에 맞는 trivy 파일명 결정
+		var trivyFileName string
+		switch {
+		case arch == "amd64" && osType == "linux":
+			trivyFileName = "trivy_linux_amd64"
+		case arch == "arm64" && osType == "linux":
+			trivyFileName = "trivy_linux_arm64"
+		default:
+			result.Status = "error"
+			result.ErrorMsg = fmt.Sprintf("지원하지 않는 아키텍처입니다: %s/%s", osType, arch)
+			return result, nil
+		}
+
 		// S3에서 파일 다운로드
 		cmd := exec.Command("aws", "s3", "cp",
-			"s3://docker-analysis-api-dev-binaries-92a1fdfdba50a7e6/trivy",
+			fmt.Sprintf("s3://docker-analysis-api-dev-binaries-92a1fdfdba50a7e6/%s", trivyFileName),
 			trivyPath)
 
 		if output, err := cmd.CombinedOutput(); err != nil {
