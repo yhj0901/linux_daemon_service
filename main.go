@@ -510,7 +510,6 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 	}
 
 	jsonOutput := outputStr[jsonStart:]
-	log.Printf("추출된 JSON 출력: %s", jsonOutput)
 
 	// Trivy 출력 결과 파싱
 	var trivyResult struct {
