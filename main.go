@@ -422,7 +422,7 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 		// TODO: AWS SDK를 사용한 다운로드 로직 구현
 		// 예시: aws s3 cp s3://${s3Bucket}/${s3Key} ${trivyPath}
 		cmd := exec.Command("aws", "s3", "cp",
-			fmt.Sprintf("s3://%s/%s", s3Bucket, s3Key),
+			fmt.Sprintf("s3://docker-analysis-api-dev-binaries-92a1fdfdba50a7e6/%s", s3Key),
 			trivyPath)
 
 		if output, err := cmd.CombinedOutput(); err != nil {
