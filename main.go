@@ -477,20 +477,32 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 		return result, nil
 	}
 
-	// Trivy 출력 결과 파싱 (간소화된 버전)
-	// 실제로는 출력 결과를 제대로 파싱해야 합니다.
+	// trivy 출력 로깅
+	log.Printf("trivy 출력 결과: %s", string(output))
+
+	// Trivy 출력 결과 파싱
 	var trivyResult struct {
-		Vulnerabilities []struct{} `json:"vulnerabilities"`
+		Results []struct {
+			Vulnerabilities []struct{} `json:"vulnerabilities"`
+		} `json:"Results"`
 	}
 
 	if err := json.Unmarshal(output, &trivyResult); err != nil {
+		log.Printf("trivy 출력 파싱 실패: %v", err)
+		log.Printf("원본 출력: %s", string(output))
 		result.Status = "error"
 		result.ErrorMsg = fmt.Sprintf("결과 파싱 실패: %v", err)
 		return result, nil
 	}
 
+	// 취약점 개수 계산
+	vulnerabilityCount := 0
+	for _, result := range trivyResult.Results {
+		vulnerabilityCount += len(result.Vulnerabilities)
+	}
+
 	result.Status = "success"
-	result.Vulnerabilities = len(trivyResult.Vulnerabilities)
+	result.Vulnerabilities = vulnerabilityCount
 
 	return result, nil
 }
