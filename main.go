@@ -43,24 +43,41 @@ type BackendRequestMessage struct {
 
 // 도커 이미지 분석 결과 메시지 구조체
 type DockerImageResult struct {
-	JobID           string    `json:"job_id"`
-	ImageName       string    `json:"image_name"`
-	Tag             string    `json:"tag"`
-	Status          string    `json:"status"`          // success, error
-	Vulnerabilities int       `json:"vulnerabilities"` // 취약점 개수
-	CompletedAt     time.Time `json:"completed_at"`
-	ErrorMsg        string    `json:"error_msg,omitempty"`
+	JobID           string          `json:"job_id"`
+	ImageName       string          `json:"image_name"`
+	Tag             string          `json:"tag"`
+	Status          string          `json:"status"`          // success, error
+	Vulnerabilities int             `json:"vulnerabilities"` // 취약점 개수
+	CompletedAt     time.Time       `json:"completed_at"`
+	ErrorMsg        string          `json:"error_msg,omitempty"`
+	VulnDetails     []Vulnerability `json:"vuln_details,omitempty"` // 취약점 상세 정보
+}
+
+type Vulnerability struct {
+	VulnerabilityID  string   `json:"vulnerability_id"`
+	PkgID            string   `json:"pkg_id"`
+	PkgName          string   `json:"pkg_name"`
+	InstalledVersion string   `json:"installed_version"`
+	FixedVersion     string   `json:"fixed_version"`
+	Status           string   `json:"status"`
+	Severity         string   `json:"severity"`
+	Title            string   `json:"title"`
+	Description      string   `json:"description,omitempty"`
+	References       []string `json:"references,omitempty"`
+	PublishedDate    string   `json:"published_date,omitempty"`
+	LastModifiedDate string   `json:"last_modified_date,omitempty"`
 }
 
 // 백엔드에 전송할 결과 메시지 구조체
 type BackendResponseMessage struct {
-	JobID           string `json:"job_id"`
-	ImageURL        string `json:"image_url"`
-	Status          string `json:"status"`          // success, error
-	Vulnerabilities int    `json:"vulnerabilities"` // 취약점 개수
-	CompletedAt     string `json:"completed_at"`
-	ErrorMsg        string `json:"error_msg,omitempty"`
-	Action          string `json:"action"`
+	JobID           string          `json:"job_id"`
+	ImageURL        string          `json:"image_url"`
+	Status          string          `json:"status"`          // success, error
+	Vulnerabilities int             `json:"vulnerabilities"` // 취약점 개수
+	CompletedAt     string          `json:"completed_at"`
+	ErrorMsg        string          `json:"error_msg,omitempty"`
+	Action          string          `json:"action"`
+	VulnDetails     []Vulnerability `json:"vuln_details,omitempty"` // 취약점 상세 정보
 }
 
 // ProcessManager는 프로세스 관리를 담당하는 구조체입니다.
@@ -351,6 +368,7 @@ func (r *RabbitMQ) PublishResult(ctx context.Context, result *DockerImageResult)
 		CompletedAt:     result.CompletedAt.Format(time.RFC3339),
 		ErrorMsg:        result.ErrorMsg,
 		Action:          "analyze_docker_image_result",
+		VulnDetails:     result.VulnDetails,
 	}
 
 	// 메시지를 JSON으로 인코딩
@@ -541,6 +559,26 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 
 	result.Status = "success"
 	result.Vulnerabilities = vulnerabilityCount
+
+	// 취약점 상세 정보 추가
+	for _, vuln := range trivyResult.Results {
+		for _, detail := range vuln.Vulnerabilities {
+			vulnDetail := Vulnerability{
+				VulnerabilityID:  detail.VulnerabilityID,
+				PkgID:            detail.PkgID,
+				PkgName:          detail.PkgName,
+				InstalledVersion: detail.InstalledVersion,
+				FixedVersion:     detail.FixedVersion,
+				Status:           detail.Status,
+				Severity:         detail.Severity,
+				Title:            detail.Title,
+				References:       detail.References,
+				PublishedDate:    detail.PublishedDate,
+				LastModifiedDate: detail.LastModifiedDate,
+			}
+			result.VulnDetails = append(result.VulnDetails, vulnDetail)
+		}
+	}
 
 	return result, nil
 }
