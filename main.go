@@ -400,8 +400,49 @@ func AnalyzeDockerImage(ctx context.Context, req *DockerImageRequest) (*DockerIm
 		Status:    "processing",
 	}
 
+	// trivy 경로 설정
+	trivyPath := "/usr/local/bin/trivy"
+
+	// trivy 존재 여부 확인
+	if _, err := os.Stat(trivyPath); os.IsNotExist(err) {
+		log.Printf("trivy가 설치되어 있지 않습니다. S3에서 다운로드 시작...")
+
+		// AWS SDK를 사용하여 S3에서 trivy 다운로드
+		// TODO: AWS SDK 설정 및 S3 버킷 정보 설정 필요
+		s3Bucket := os.Getenv("S3_BUCKET")
+		s3Key := "trivy"
+
+		if s3Bucket == "" {
+			result.Status = "error"
+			result.ErrorMsg = "S3_BUCKET 환경 변수가 설정되지 않았습니다."
+			return result, nil
+		}
+
+		// S3에서 파일 다운로드
+		// TODO: AWS SDK를 사용한 다운로드 로직 구현
+		// 예시: aws s3 cp s3://${s3Bucket}/${s3Key} ${trivyPath}
+		cmd := exec.Command("aws", "s3", "cp",
+			fmt.Sprintf("s3://%s/%s", s3Bucket, s3Key),
+			trivyPath)
+
+		if output, err := cmd.CombinedOutput(); err != nil {
+			result.Status = "error"
+			result.ErrorMsg = fmt.Sprintf("trivy 다운로드 실패: %v - %s", err, string(output))
+			return result, nil
+		}
+
+		// 실행 권한 설정
+		if err := os.Chmod(trivyPath, 0755); err != nil {
+			result.Status = "error"
+			result.ErrorMsg = fmt.Sprintf("trivy 권한 설정 실패: %v", err)
+			return result, nil
+		}
+
+		log.Printf("trivy 다운로드 및 권한 설정 완료")
+	}
+
 	// Trivy 명령어 실행 준비
-	cmd := exec.CommandContext(ctx, "trivy", "image", "--format", "json", imageFullName)
+	cmd := exec.CommandContext(ctx, trivyPath, "image", "--format", "json", imageFullName)
 	output, err := cmd.CombinedOutput()
 
 	// 결과 처리
