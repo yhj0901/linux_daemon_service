@@ -18,7 +18,9 @@ import (
 // RabbitMQ 구조체는 RabbitMQ 연결과 채널을 관리합니다
 type RabbitMQ struct {
 	conn           *amqp.Connection
-	channel        *amqp.Channel
+	channel        *amqp.Channel // 기존 호환성을 위한 채널 (deprecated)
+	requestChannel *amqp.Channel // 요청 큐 소비용 채널
+	resultChannel  *amqp.Channel // 결과 큐 발행용 채널
 	config         config.Config
 	exchange       string
 	requestQueue   string
@@ -104,15 +106,34 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 		return nil, err
 	}
 
-	// 채널 생성
+	// 기본 채널 생성 (이전 호환성용)
 	ch, err := conn.Channel()
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("rabbitmq 채널 생성 실패: %v", err)
+		return nil, fmt.Errorf("rabbitmq 기본 채널 생성 실패: %v", err)
 	}
 
-	// Exchange 선언
-	err = ch.ExchangeDeclare(
+	// 요청 채널 생성
+	requestCh, err := conn.Channel()
+	if err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("rabbitmq 요청 채널 생성 실패: %v", err)
+	}
+	log.Printf("요청 전용 채널 생성 완료")
+
+	// 결과 채널 생성
+	resultCh, err := conn.Channel()
+	if err != nil {
+		requestCh.Close()
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("rabbitmq 결과 채널 생성 실패: %v", err)
+	}
+	log.Printf("결과 전용 채널 생성 완료")
+
+	// Exchange 선언 (결과 채널 사용)
+	err = resultCh.ExchangeDeclare(
 		exchange, // 이름
 		"topic",  // 타입 (topic으로 변경하여 라우팅 키 패턴 지원)
 		true,     // durable
@@ -122,13 +143,15 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 		nil,      // arguments
 	)
 	if err != nil {
+		resultCh.Close()
+		requestCh.Close()
 		ch.Close()
 		conn.Close()
 		return nil, fmt.Errorf("exchange 선언 실패: %v", err)
 	}
 
-	// 요청 큐 선언
-	_, err = ch.QueueDeclare(
+	// 요청 큐 선언 (요청 채널 사용)
+	_, err = requestCh.QueueDeclare(
 		requestQueue, // 이름
 		true,         // durable
 		false,        // delete when unused
@@ -137,13 +160,15 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 		nil,          // arguments
 	)
 	if err != nil {
+		resultCh.Close()
+		requestCh.Close()
 		ch.Close()
 		conn.Close()
 		return nil, fmt.Errorf("요청 queue 선언 실패: %v", err)
 	}
 
-	// 요청 큐와 Exchange 바인딩
-	err = ch.QueueBind(
+	// 요청 큐와 Exchange 바인딩 (요청 채널 사용)
+	err = requestCh.QueueBind(
 		requestQueue,   // queue name
 		requestRouting, // routing key
 		exchange,       // exchange
@@ -151,13 +176,15 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 		nil,
 	)
 	if err != nil {
+		resultCh.Close()
+		requestCh.Close()
 		ch.Close()
 		conn.Close()
 		return nil, fmt.Errorf("요청 queue 바인딩 실패: %v", err)
 	}
 
-	// 결과 큐 선언
-	_, err = ch.QueueDeclare(
+	// 결과 큐 선언 (결과 채널 사용)
+	_, err = resultCh.QueueDeclare(
 		resultQueue, // 이름
 		true,        // durable
 		false,       // delete when unused
@@ -166,13 +193,15 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 		nil,         // arguments
 	)
 	if err != nil {
+		resultCh.Close()
+		requestCh.Close()
 		ch.Close()
 		conn.Close()
 		return nil, fmt.Errorf("결과 queue 선언 실패: %v", err)
 	}
 
-	// 결과 큐와 Exchange 바인딩
-	err = ch.QueueBind(
+	// 결과 큐와 Exchange 바인딩 (결과 채널 사용)
+	err = resultCh.QueueBind(
 		resultQueue,   // queue name
 		resultRouting, // routing key
 		exchange,      // exchange
@@ -180,14 +209,37 @@ func NewRabbitMQ(cfg config.Config) (*RabbitMQ, error) {
 		nil,
 	)
 	if err != nil {
+		resultCh.Close()
+		requestCh.Close()
 		ch.Close()
 		conn.Close()
 		return nil, fmt.Errorf("결과 queue 바인딩 실패: %v", err)
 	}
 
+	// 각 채널에 QoS 설정
+	if err := requestCh.Qos(1, 0, false); err != nil {
+		resultCh.Close()
+		requestCh.Close()
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("요청 채널 QoS 설정 실패: %v", err)
+	}
+
+	if err := resultCh.Qos(1, 0, false); err != nil {
+		resultCh.Close()
+		requestCh.Close()
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("결과 채널 QoS 설정 실패: %v", err)
+	}
+
+	log.Printf("RabbitMQ 채널 분리 설정 완료: 요청 채널 및 결과 채널 준비됨")
+
 	return &RabbitMQ{
 		conn:           conn,
-		channel:        ch,
+		channel:        ch, // 이전 호환성용
+		requestChannel: requestCh,
+		resultChannel:  resultCh,
 		config:         cfg,
 		exchange:       exchange,
 		requestQueue:   requestQueue,
@@ -226,7 +278,8 @@ func (r *RabbitMQ) PublishResult(ctx context.Context, result *trivy.DockerImageR
 	log.Printf("환경 변수 확인: RABBITMQ_RESULT_QUEUE=%s, RABBITMQ_RESULT_ROUTING_KEY=%s",
 		os.Getenv("RABBITMQ_RESULT_QUEUE"), os.Getenv("RABBITMQ_RESULT_ROUTING_KEY"))
 
-	err = r.channel.PublishWithContext(
+	// 결과 전용 채널 사용
+	err = r.resultChannel.PublishWithContext(
 		ctx,
 		r.exchange,      // exchange
 		r.resultRouting, // routing key
@@ -241,7 +294,46 @@ func (r *RabbitMQ) PublishResult(ctx context.Context, result *trivy.DockerImageR
 
 	if err != nil {
 		log.Printf("결과 메시지 발행 실패: %v", err)
-		return fmt.Errorf("rabbitmq 발행 실패: %v", err)
+
+		// 결과 채널이 닫혔는지 확인하고 필요시 새 채널 생성 시도
+		if r.resultChannel.IsClosed() {
+			log.Printf("결과 채널이 닫혀 있습니다. 새 채널 생성 시도...")
+			newResultCh, chErr := r.conn.Channel()
+			if chErr != nil {
+				log.Printf("새 결과 채널 생성 실패: %v", chErr)
+				return fmt.Errorf("결과 채널 재생성 실패: %v", chErr)
+			}
+			r.resultChannel = newResultCh
+
+			// 새 채널에 QoS 설정
+			if qosErr := r.resultChannel.Qos(1, 0, false); qosErr != nil {
+				log.Printf("새 결과 채널 QoS 설정 실패: %v", qosErr)
+			}
+
+			// 재시도
+			retryErr := r.resultChannel.PublishWithContext(
+				ctx,
+				r.exchange,
+				r.resultRouting,
+				false,
+				false,
+				amqp.Publishing{
+					ContentType:  "application/json",
+					DeliveryMode: amqp.Persistent,
+					Body:         jsonData,
+				},
+			)
+
+			if retryErr != nil {
+				log.Printf("재시도 결과 메시지 발행 실패: %v", retryErr)
+				return fmt.Errorf("rabbitmq 결과 발행 실패 (재시도 후): %v", retryErr)
+			}
+
+			log.Printf("재시도 결과 메시지 발행 성공!")
+			return nil
+		}
+
+		return fmt.Errorf("rabbitmq 결과 발행 실패: %v", err)
 	}
 
 	log.Printf("결과 메시지 발행 성공!")
@@ -250,7 +342,8 @@ func (r *RabbitMQ) PublishResult(ctx context.Context, result *trivy.DockerImageR
 
 // ConsumeRequests는 이미지 분석 요청을 소비합니다.
 func (r *RabbitMQ) ConsumeRequests(ctx context.Context) error {
-	msgs, err := r.channel.Consume(
+	// 요청 전용 채널 사용
+	msgs, err := r.requestChannel.Consume(
 		r.requestQueue, // queue
 		"",             // consumer
 		false,          // auto-ack (수동 ack로 변경)
@@ -260,17 +353,92 @@ func (r *RabbitMQ) ConsumeRequests(ctx context.Context) error {
 		nil,            // args
 	)
 	if err != nil {
+		// 요청 채널이 닫혔는지 확인하고 필요시 새 채널 생성 시도
+		if r.requestChannel.IsClosed() {
+			log.Printf("요청 채널이 닫혀 있습니다. 새 채널 생성 시도...")
+			newRequestCh, chErr := r.conn.Channel()
+			if chErr != nil {
+				log.Printf("새 요청 채널 생성 실패: %v", chErr)
+				return fmt.Errorf("요청 채널 재생성 실패: %v", chErr)
+			}
+			r.requestChannel = newRequestCh
+
+			// 새 채널에 QoS 설정
+			if qosErr := r.requestChannel.Qos(1, 0, false); qosErr != nil {
+				log.Printf("새 요청 채널 QoS 설정 실패: %v", qosErr)
+			}
+
+			// 요청 큐 선언 및 바인딩 재설정
+			_, declareErr := r.requestChannel.QueueDeclare(
+				r.requestQueue,
+				true,
+				false,
+				false,
+				false,
+				nil,
+			)
+			if declareErr != nil {
+				log.Printf("요청 큐 재선언 실패: %v", declareErr)
+				return fmt.Errorf("요청 큐 재선언 실패: %v", declareErr)
+			}
+
+			bindErr := r.requestChannel.QueueBind(
+				r.requestQueue,
+				r.requestRouting,
+				r.exchange,
+				false,
+				nil,
+			)
+			if bindErr != nil {
+				log.Printf("요청 큐 재바인딩 실패: %v", bindErr)
+				return fmt.Errorf("요청 큐 재바인딩 실패: %v", bindErr)
+			}
+
+			// 재시도
+			return r.ConsumeRequests(ctx)
+		}
+
 		return fmt.Errorf("요청 메시지 소비 실패: %v", err)
 	}
+
+	log.Printf("요청 큐에서 메시지 소비 시작")
 
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
+				log.Printf("컨텍스트 취소로 요청 소비 중단")
 				return
 			case msg, ok := <-msgs:
 				if !ok {
 					log.Println("메시지 채널이 닫혔습니다")
+
+					// 채널이 닫힌 경우 재연결 시도
+					log.Println("요청 채널 재연결 시도...")
+
+					// 기존 채널 종료
+					if r.requestChannel != nil && !r.requestChannel.IsClosed() {
+						r.requestChannel.Close()
+					}
+
+					// 새 채널 생성
+					newCh, err := r.conn.Channel()
+					if err != nil {
+						log.Printf("요청 채널 재생성 실패: %v", err)
+						return
+					}
+
+					r.requestChannel = newCh
+
+					// QoS 설정
+					if err := r.requestChannel.Qos(1, 0, false); err != nil {
+						log.Printf("요청 채널 QoS 설정 실패: %v", err)
+					}
+
+					// 소비 재시작 시도
+					if err := r.ConsumeRequests(ctx); err != nil {
+						log.Printf("요청 소비 재시작 실패: %v", err)
+					}
 					return
 				}
 
@@ -292,7 +460,7 @@ func (r *RabbitMQ) processImageRequest(ctx context.Context, msg amqp.Delivery) {
 	}()
 
 	// 원본 메시지 로깅
-	log.Printf("수신된 메시지: %s", string(msg.Body))
+	log.Printf("요청 채널에서 메시지 수신: %s", string(msg.Body))
 
 	// 요청 메시지 파싱 시도 - 백엔드 형식
 	var backendRequest BackendRequestMessage
@@ -348,7 +516,80 @@ func (r *RabbitMQ) processImageRequest(ctx context.Context, msg amqp.Delivery) {
 
 // processStandardRequest는 표준 요청 형식에 대한 이미지 분석을 처리합니다.
 func (r *RabbitMQ) processStandardRequest(ctx context.Context, request *trivy.DockerImageRequest) {
+	// 결과 채널 상태 확인
+	if r.resultChannel == nil || r.resultChannel.IsClosed() {
+		log.Printf("결과 채널이 닫혀있거나 없습니다. 새 채널 생성 시도...")
+		newResultCh, err := r.conn.Channel()
+		if err != nil {
+			log.Printf("새 결과 채널 생성 실패: %v", err)
+
+			// 오류 결과를 전송 (기본 채널 사용 시도)
+			failedResult := &trivy.DockerImageResult{
+				JobID:       request.JobID,
+				ImageName:   request.ImageName,
+				Tag:         request.Tag,
+				Status:      "error",
+				CompletedAt: time.Now(),
+				ErrorMsg:    "결과 채널 생성 실패로 분석을 진행할 수 없습니다",
+			}
+
+			// 기본 채널 시도
+			if r.channel != nil && !r.channel.IsClosed() {
+				log.Printf("기본 채널을 사용하여 오류 결과 전송 시도")
+				jsonData, jsonErr := json.Marshal(&BackendResponseMessage{
+					JobID:       failedResult.JobID,
+					ImageURL:    fmt.Sprintf("%s:%s", failedResult.ImageName, failedResult.Tag),
+					Status:      failedResult.Status,
+					CompletedAt: failedResult.CompletedAt.Format(time.RFC3339),
+					ErrorMsg:    failedResult.ErrorMsg,
+					Action:      "analyze_docker_image_result",
+				})
+
+				if jsonErr == nil {
+					r.channel.PublishWithContext(
+						ctx,
+						r.exchange,
+						r.resultRouting,
+						false,
+						false,
+						amqp.Publishing{
+							ContentType:  "application/json",
+							DeliveryMode: amqp.Persistent,
+							Body:         jsonData,
+						},
+					)
+				}
+			}
+
+			return
+		}
+
+		r.resultChannel = newResultCh
+
+		// QoS 설정
+		if err := r.resultChannel.Qos(1, 0, false); err != nil {
+			log.Printf("새 결과 채널 QoS 설정 실패: %v", err)
+		}
+
+		// Exchange 재선언
+		err = r.resultChannel.ExchangeDeclare(
+			r.exchange,
+			"topic",
+			true,
+			false,
+			false,
+			false,
+			nil,
+		)
+		if err != nil {
+			log.Printf("Exchange 재선언 실패: %v", err)
+		}
+
+		log.Printf("결과 채널이 성공적으로 재생성되었습니다")
+	}
+
 	// 이미지 분석 실행
+	log.Printf("이미지 분석 시작: JobID=%s, Image=%s:%s", request.JobID, request.ImageName, request.Tag)
 	analysisCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
@@ -372,19 +613,36 @@ func (r *RabbitMQ) processStandardRequest(ctx context.Context, request *trivy.Do
 	}
 
 	// 분석 결과 발행
-	log.Printf("분석 결과 발행: JobID=%s, Status=%s, Vulnerabilities=%d",
+	log.Printf("분석 결과 발행 준비: JobID=%s, Status=%s, Vulnerabilities=%d",
 		result.JobID, result.Status, result.Vulnerabilities)
 
 	if err := r.PublishResult(ctx, result); err != nil {
 		log.Printf("결과 발행 실패: %v", err)
+	} else {
+		log.Printf("결과 발행 완료: JobID=%s", result.JobID)
 	}
 }
 
 // Close는 RabbitMQ 연결을 닫습니다.
 func (r *RabbitMQ) Close() error {
-	if r.channel != nil {
-		r.channel.Close()
+	if r.resultChannel != nil {
+		if !r.resultChannel.IsClosed() {
+			r.resultChannel.Close()
+		}
 	}
+
+	if r.requestChannel != nil {
+		if !r.requestChannel.IsClosed() {
+			r.requestChannel.Close()
+		}
+	}
+
+	if r.channel != nil {
+		if !r.channel.IsClosed() {
+			r.channel.Close()
+		}
+	}
+
 	if r.conn != nil {
 		return r.conn.Close()
 	}
