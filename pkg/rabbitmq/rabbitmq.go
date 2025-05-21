@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"linux_daemon_service/config"
+	"linux_daemon_service/pkg/api"
 	"linux_daemon_service/pkg/trivy"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -516,77 +517,8 @@ func (r *RabbitMQ) processImageRequest(ctx context.Context, msg amqp.Delivery) {
 
 // processStandardRequest는 표준 요청 형식에 대한 이미지 분석을 처리합니다.
 func (r *RabbitMQ) processStandardRequest(ctx context.Context, request *trivy.DockerImageRequest) {
-	// 결과 채널 상태 확인
-	if r.resultChannel == nil || r.resultChannel.IsClosed() {
-		log.Printf("결과 채널이 닫혀있거나 없습니다. 새 채널 생성 시도...")
-		newResultCh, err := r.conn.Channel()
-		if err != nil {
-			log.Printf("새 결과 채널 생성 실패: %v", err)
-
-			// 오류 결과를 전송 (기본 채널 사용 시도)
-			failedResult := &trivy.DockerImageResult{
-				JobID:       request.JobID,
-				ImageName:   request.ImageName,
-				Tag:         request.Tag,
-				Status:      "error",
-				CompletedAt: time.Now(),
-				ErrorMsg:    "결과 채널 생성 실패로 분석을 진행할 수 없습니다",
-			}
-
-			// 기본 채널 시도
-			if r.channel != nil && !r.channel.IsClosed() {
-				log.Printf("기본 채널을 사용하여 오류 결과 전송 시도")
-				jsonData, jsonErr := json.Marshal(&BackendResponseMessage{
-					JobID:       failedResult.JobID,
-					ImageURL:    fmt.Sprintf("%s:%s", failedResult.ImageName, failedResult.Tag),
-					Status:      failedResult.Status,
-					CompletedAt: failedResult.CompletedAt.Format(time.RFC3339),
-					ErrorMsg:    failedResult.ErrorMsg,
-					Action:      "analyze_docker_image_result",
-				})
-
-				if jsonErr == nil {
-					r.channel.PublishWithContext(
-						ctx,
-						r.exchange,
-						r.resultRouting,
-						false,
-						false,
-						amqp.Publishing{
-							ContentType:  "application/json",
-							DeliveryMode: amqp.Persistent,
-							Body:         jsonData,
-						},
-					)
-				}
-			}
-
-			return
-		}
-
-		r.resultChannel = newResultCh
-
-		// QoS 설정
-		if err := r.resultChannel.Qos(1, 0, false); err != nil {
-			log.Printf("새 결과 채널 QoS 설정 실패: %v", err)
-		}
-
-		// Exchange 재선언
-		err = r.resultChannel.ExchangeDeclare(
-			r.exchange,
-			"topic",
-			true,
-			false,
-			false,
-			false,
-			nil,
-		)
-		if err != nil {
-			log.Printf("Exchange 재선언 실패: %v", err)
-		}
-
-		log.Printf("결과 채널이 성공적으로 재생성되었습니다")
-	}
+	// API 클라이언트 생성
+	apiClient := api.NewClient(r.config)
 
 	// 이미지 분석 실행
 	log.Printf("이미지 분석 시작: JobID=%s, Image=%s:%s", request.JobID, request.ImageName, request.Tag)
@@ -606,20 +538,29 @@ func (r *RabbitMQ) processStandardRequest(ctx context.Context, request *trivy.Do
 			ErrorMsg:    fmt.Sprintf("분석 처리 오류: %v", err),
 		}
 
-		if err := r.PublishResult(ctx, failedResult); err != nil {
-			log.Printf("실패 결과 발행 실패: %v", err)
+		// API로 실패 결과 전송
+		if err := apiClient.SendAnalysisResult(ctx, failedResult); err != nil {
+			log.Printf("API 실패 결과 전송 실패: %v", err)
 		}
 		return
 	}
 
-	// 분석 결과 발행
-	log.Printf("분석 결과 발행 준비: JobID=%s, Status=%s, Vulnerabilities=%d",
+	// 분석 결과 API로 전송
+	log.Printf("분석 결과 API 전송 준비: JobID=%s, Status=%s, Vulnerabilities=%d",
 		result.JobID, result.Status, result.Vulnerabilities)
 
-	if err := r.PublishResult(ctx, result); err != nil {
-		log.Printf("결과 발행 실패: %v", err)
+	if err := apiClient.SendAnalysisResult(ctx, result); err != nil {
+		log.Printf("API 결과 전송 실패: %v", err)
+
+		// 실패 시 RabbitMQ로 백업 전송 시도 (선택적)
+		log.Printf("RabbitMQ로 백업 전송 시도")
+		if publishErr := r.PublishResult(ctx, result); publishErr != nil {
+			log.Printf("RabbitMQ 백업 전송도 실패: %v", publishErr)
+		} else {
+			log.Printf("RabbitMQ 백업 전송 성공")
+		}
 	} else {
-		log.Printf("결과 발행 완료: JobID=%s", result.JobID)
+		log.Printf("API 결과 전송 완료: JobID=%s", result.JobID)
 	}
 }
 

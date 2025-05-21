@@ -1,6 +1,6 @@
 # Backend 설정
 backend:
-  url: "http://localhost:8080/api"  # Backend 서버 URL
+  url: "http://docker-analysis-api-dev-alb-869797069.ap-northeast-2.elb.amazonaws.com/api"  # Backend 서버 URL
   timeout: 30                       # API 요청 타임아웃 (초)
   retryCnt: 3                       # API 요청 재시도 횟수
 
